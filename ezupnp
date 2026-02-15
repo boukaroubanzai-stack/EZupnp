@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+import argparse
+import socket
+import sys
+import miniupnpc
+
+
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    finally:
+        s.close()
+
+
+def open_port(port):
+    upnp = miniupnpc.UPnP()
+    upnp.discoverdelay = 200
+    devices = upnp.discover()
+    if devices == 0:
+        print("Error: No UPnP devices found.", file=sys.stderr)
+        sys.exit(1)
+
+    upnp.selectigd()
+    local_ip = get_local_ip()
+    external_ip = upnp.externalipaddress()
+
+    result = upnp.addportmapping(
+        port, "TCP", local_ip, port, "EZupnp", ""
+    )
+    if result:
+        print(f"Opened port {port}/TCP")
+        print(f"  External: {external_ip}:{port} -> {local_ip}:{port}")
+    else:
+        print(f"Error: Failed to open port {port}.", file=sys.stderr)
+        sys.exit(1)
+
+
+def close_port(port):
+    upnp = miniupnpc.UPnP()
+    upnp.discoverdelay = 200
+    devices = upnp.discover()
+    if devices == 0:
+        print("Error: No UPnP devices found.", file=sys.stderr)
+        sys.exit(1)
+
+    upnp.selectigd()
+    result = upnp.deleteportmapping(port, "TCP")
+    if result:
+        print(f"Closed port {port}/TCP")
+    else:
+        print(f"Error: Failed to close port {port}.", file=sys.stderr)
+        sys.exit(1)
+
+
+def list_ports():
+    upnp = miniupnpc.UPnP()
+    upnp.discoverdelay = 200
+    devices = upnp.discover()
+    if devices == 0:
+        print("Error: No UPnP devices found.", file=sys.stderr)
+        sys.exit(1)
+
+    upnp.selectigd()
+    print(f"{'EXT PORT':<10} {'PROTO':<6} {'INT HOST':<16} {'INT PORT':<10} {'DESCRIPTION'}")
+    i = 0
+    while True:
+        mapping = upnp.getgenericportmapping(i)
+        if mapping is None:
+            break
+        ext_port, proto, (int_host, int_port), desc, enabled, remote, duration = mapping
+        print(f"{ext_port:<10} {proto:<6} {int_host:<16} {int_port:<10} {desc}")
+        i += 1
+    if i == 0:
+        print("No port mappings found.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Open or close a port on your router via UPnP")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("-o", type=int, metavar="PORT", help="Port to open")
+    group.add_argument("-c", type=int, metavar="PORT", help="Port to close")
+    group.add_argument("-l", action="store_true", help="List all port mappings")
+    args = parser.parse_args()
+
+    if args.l:
+        list_ports()
+    else:
+        port = args.o if args.o else args.c
+        if port < 1 or port > 65535:
+            print("Error: Port must be between 1 and 65535.", file=sys.stderr)
+            sys.exit(1)
+        if args.o:
+            open_port(args.o)
+        else:
+            close_port(args.c)
+
+
+if __name__ == "__main__":
+    main()
