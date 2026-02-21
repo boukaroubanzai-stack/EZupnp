@@ -16,6 +16,17 @@ except ImportError:
         sys.exit(1)
 
 
+def get_upnp():
+    upnp = miniupnpc.UPnP()
+    upnp.discoverdelay = 200
+    devices = upnp.discover()
+    if devices == 0:
+        print("Error: No UPnP devices found.", file=sys.stderr)
+        sys.exit(1)
+    upnp.selectigd()
+    return upnp
+
+
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -25,55 +36,38 @@ def get_local_ip():
         s.close()
 
 
-def open_port(port):
-    upnp = miniupnpc.UPnP()
-    upnp.discoverdelay = 200
-    devices = upnp.discover()
-    if devices == 0:
-        print("Error: No UPnP devices found.", file=sys.stderr)
-        sys.exit(1)
-
-    upnp.selectigd()
+def open_port(port, proto, duration):
+    upnp = get_upnp()
     local_ip = get_local_ip()
     external_ip = upnp.externalipaddress()
 
     result = upnp.addportmapping(
-        port, "TCP", local_ip, port, "EZupnp", ""
+        port, proto, local_ip, port, "EZupnp", str(duration)
     )
     if result:
-        print(f"Opened port {port}/TCP")
+        print(f"Opened port {port}/{proto}")
         print(f"  External: {external_ip}:{port} -> {local_ip}:{port}")
+        if duration:
+            print(f"  Lease: {duration}s")
+        else:
+            print(f"  Lease: indefinite")
     else:
-        print(f"Error: Failed to open port {port}.", file=sys.stderr)
+        print(f"Error: Failed to open port {port}/{proto}.", file=sys.stderr)
         sys.exit(1)
 
 
-def close_port(port):
-    upnp = miniupnpc.UPnP()
-    upnp.discoverdelay = 200
-    devices = upnp.discover()
-    if devices == 0:
-        print("Error: No UPnP devices found.", file=sys.stderr)
-        sys.exit(1)
-
-    upnp.selectigd()
-    result = upnp.deleteportmapping(port, "TCP")
+def close_port(port, proto):
+    upnp = get_upnp()
+    result = upnp.deleteportmapping(port, proto)
     if result:
-        print(f"Closed port {port}/TCP")
+        print(f"Closed port {port}/{proto}")
     else:
-        print(f"Error: Failed to close port {port}.", file=sys.stderr)
+        print(f"Error: Failed to close port {port}/{proto}.", file=sys.stderr)
         sys.exit(1)
 
 
 def list_ports():
-    upnp = miniupnpc.UPnP()
-    upnp.discoverdelay = 200
-    devices = upnp.discover()
-    if devices == 0:
-        print("Error: No UPnP devices found.", file=sys.stderr)
-        sys.exit(1)
-
-    upnp.selectigd()
+    upnp = get_upnp()
     print(f"{'EXT PORT':<10} {'PROTO':<6} {'INT HOST':<16} {'INT PORT':<10} {'DESCRIPTION'}")
     i = 0
     while True:
@@ -87,25 +81,111 @@ def list_ports():
         print("No port mappings found.")
 
 
+def format_bytes(n):
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}" if unit != "B" else f"{n} {unit}"
+        n /= 1024
+    return f"{n:.1f} PB"
+
+
+def show_status():
+    upnp = get_upnp()
+    external_ip = upnp.externalipaddress()
+    local_ip = upnp.lanaddr
+
+    print("=== Gateway Status ===")
+    print(f"  External IP:     {external_ip}")
+    print(f"  LAN address:     {local_ip}")
+
+    try:
+        status, uptime, last_error = upnp.statusinfo()
+        print(f"  Connection:      {status}")
+        if uptime:
+            days, rem = divmod(int(uptime), 86400)
+            hours, rem = divmod(rem, 3600)
+            minutes, secs = divmod(rem, 60)
+            parts = []
+            if days:
+                parts.append(f"{days}d")
+            if hours:
+                parts.append(f"{hours}h")
+            if minutes:
+                parts.append(f"{minutes}m")
+            parts.append(f"{secs}s")
+            print(f"  Uptime:          {''.join(parts)}")
+        if last_error:
+            print(f"  Last error:      {last_error}")
+    except Exception:
+        pass
+
+    try:
+        conn_type = upnp.connectiontype()
+        print(f"  Connection type: {conn_type}")
+    except Exception:
+        pass
+
+
+def show_traffic():
+    upnp = get_upnp()
+
+    print("=== Traffic Statistics ===")
+    try:
+        sent = upnp.totalbytesent()
+        print(f"  Bytes sent:        {format_bytes(sent)} ({sent:,} bytes)")
+    except Exception:
+        print("  Bytes sent:        N/A")
+
+    try:
+        recv = upnp.totalbytereceived()
+        print(f"  Bytes received:    {format_bytes(recv)} ({recv:,} bytes)")
+    except Exception:
+        print("  Bytes received:    N/A")
+
+    try:
+        psent = upnp.totalpacketsent()
+        print(f"  Packets sent:      {psent:,}")
+    except Exception:
+        print("  Packets sent:      N/A")
+
+    try:
+        precv = upnp.totalpacketreceived()
+        print(f"  Packets received:  {precv:,}")
+    except Exception:
+        print("  Packets received:  N/A")
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Open or close a port on your router via UPnP")
+    parser = argparse.ArgumentParser(description="Manage port forwarding on your router via UPnP")
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("-o", type=int, metavar="PORT", help="Port to open")
-    group.add_argument("-c", type=int, metavar="PORT", help="Port to close")
+    group.add_argument("-o", type=int, metavar="PORT", help="Open/forward a port")
+    group.add_argument("-c", type=int, metavar="PORT", help="Close a port mapping")
     group.add_argument("-l", action="store_true", help="List all port mappings")
+    group.add_argument("-s", action="store_true", help="Show gateway status")
+    group.add_argument("-t", action="store_true", help="Show traffic statistics")
+
+    parser.add_argument("-u", action="store_true", help="Use UDP instead of TCP")
+    parser.add_argument("-d", type=int, default=0, metavar="SEC",
+                        help="Lease duration in seconds (0 = indefinite, default: 0)")
+
     args = parser.parse_args()
 
     if args.l:
         list_ports()
+    elif args.s:
+        show_status()
+    elif args.t:
+        show_traffic()
     else:
         port = args.o if args.o else args.c
         if port < 1 or port > 65535:
             print("Error: Port must be between 1 and 65535.", file=sys.stderr)
             sys.exit(1)
+        proto = "UDP" if args.u else "TCP"
         if args.o:
-            open_port(args.o)
+            open_port(args.o, proto, args.d)
         else:
-            close_port(args.c)
+            close_port(args.c, proto)
 
 
 if __name__ == "__main__":
