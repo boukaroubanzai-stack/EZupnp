@@ -42,7 +42,7 @@ def open_port(port, proto, duration):
     external_ip = upnp.externalipaddress()
 
     result = upnp.addportmapping(
-        port, proto, local_ip, port, "EZupnp", str(duration)
+        port, proto, local_ip, port, "EZupnp", "", duration
     )
     if result:
         print(f"Opened port {port}/{proto}")
